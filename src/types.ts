@@ -56,6 +56,26 @@ export interface QualityCoachFeedback {
   readerComprehension: string;
 }
 
+export interface CoverageDeficiency {
+  missingInterviews: string;
+  opposingViews: string;
+  dataSourceCount: string;
+  logicFlow: string;
+  biasRisk: string;
+  verificationSentences: string[];
+  clickability: string;
+  readerComprehension: string;
+}
+
+export interface SavedDraft {
+  id: number;
+  title: string;
+  contentKr: string;
+  contentEn: string;
+  created_at: string;
+  is_favorite: boolean;
+}
+
 export interface Post {
   id: number;
   user_id: number;
@@ -98,4 +118,93 @@ export interface ChatMessage {
   role: 'user' | 'anchor';
   text: string;
   buttons?: { label: string, value: string }[];
+}
+
+export interface TimelineItem {
+  year: number;
+  event: string;
+  impact: '높음' | '중간' | '낮음';
+  details: string;
+}
+
+export interface TimelineData {
+  timeline: TimelineItem[];
+  reportingTips: string[];
+}
+
+export interface CredibilityCheck {
+  category: string;
+  status: '✔' | '⚠' | '✗';
+  message: string;
+}
+
+export interface CredibilityData {
+  credibilityScore: number;
+  riskLevel: '낮음' | '중간' | '높음';
+  checks: {
+    hasDataSource: boolean;
+    hasInterviews: boolean;
+    hasCounterargument: boolean;
+    sourceDiversity: boolean;
+    dataFreshness: boolean;
+    claimAttribution: boolean;
+  };
+  detailedFindings: CredibilityCheck[];
+  improvementSuggestions: string[];
+}
+
+export interface ReportingRouteItem {
+  name?: string;
+  agency?: string;
+  expertise?: string[];
+  priority: '매우 높음' | '높음' | '중간';
+  priorityScore: number;
+  reason?: string;
+  department?: string;
+  division?: string;
+}
+
+export interface ReportingRouteData {
+  companies: ReportingRouteItem[];
+  government: ReportingRouteItem[];
+  experts: ReportingRouteItem[];
+}
+
+export interface ImpactPredictionData {
+  impactScore: number;
+  impactLevel: '높음' | '중간' | '낮음';
+  impactFactors: {
+    controversy: { level: '높음' | '중간' | '낮음', score: number };
+    commentLikelihood: { level: '높음' | '중간' | '낮음', score: number };
+    viralityScore: { level: '높음' | '중간' | '낮음', score: number };
+    mediaQuotabilityScore: { level: '높음' | '중간' | '낮음', score: number };
+  };
+  optimalPublishingTime: { time: string, day: string, reason: string }[];
+  recommendedChannels: { channel: string, priority: string, expectedReach: string }[];
+  cautions: string[];
+  predictedMetrics: {
+    estimatedViews: string;
+    estimatedComments: string;
+    estimatedMediaCitations: string;
+  };
+}
+
+export interface BrainstormingIdea {
+  id: string;
+  title: string;
+  difficulty: '쉬움' | '중간' | '높음';
+  difficultyStars: number;
+  estimatedDays: number;
+  keyPeople: string[];
+  requiredData: string[];
+  newsValue: '높음' | '중간' | '낮음';
+}
+
+export interface BrainstormingData {
+  ideas: BrainstormingIdea[];
+  additionalIdeas: string[];
+  trendAnalysis: {
+    hotTopics: string[];
+    emergingTopics: string[];
+  };
 }

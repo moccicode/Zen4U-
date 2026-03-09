@@ -1,0 +1,44 @@
+=== FILE: setup_guide.txt ===
+AI Newsroom 설치 및 실행 가이드
+
+본 프로젝트는 Node.js 기반의 Express 백엔드와 React 프론트엔드로 구성된 풀스택 애플리케이션입니다.
+Google Gemini API를 사용하여 지능형 기사 분석 및 질문 생성 기능을 제공합니다.
+
+1. 사전 요구사항
+- Node.js (v18 이상 권장)
+- npm 또는 yarn
+- Google Gemini API Key (https://aistudio.google.com/ 에서 발급 가능)
+
+2. 백엔드 설정 (backend_server.js)
+- 터미널을 열고 백엔드 디렉토리로 이동합니다.
+- 필요한 패키지를 설치합니다:
+  npm install express cors dotenv @google/generative-ai
+- .env 파일을 생성하고 API 키를 입력합니다:
+  GOOGLE_GEMINI_API_KEY=여러분의_API_키_입력
+  PORT=5000
+- 서버를 실행합니다:
+  node backend_server.js
+- 서버가 http://localhost:5000 에서 실행되는지 확인합니다.
+
+3. 프론트엔드 설정 (frontend_app.jsx)
+- 새로운 터미널을 열고 프론트엔드 프로젝트를 생성합니다 (이미 있는 경우 생략):
+  npx create-react-app ai-newsroom-frontend
+- 프론트엔드 디렉토리로 이동합니다:
+  cd ai-newsroom-frontend
+- 필요한 패키지를 설치합니다:
+  npm install lucide-react
+- 제공된 frontend_app.jsx 내용을 src/App.js 에 덮어씁니다.
+- Tailwind CSS를 설정합니다 (https://tailwindcss.com/docs/guides/create-react-app 참고).
+- 프론트엔드를 실행합니다:
+  npm start
+- 브라우저에서 http://localhost:3000 이 자동으로 열립니다.
+
+4. 주요 기능 사용법
+- 네트워크 맵: 등록된 기자들의 전문 분야를 확인하고 검색할 수 있습니다.
+- 중복 감지: 작성 중인 기사 아이디어를 입력하고 '분석' 버튼을 누르면 AI가 기존 기사와의 유사도를 체크하고 차별화 포인트를 제안합니다.
+- 인터뷰 준비: 취재 주제를 입력하면 기업, 정부, 전문가별로 나누어진 핵심 질문 리스트를 즉시 생성합니다.
+
+5. 문제 해결 (Troubleshooting)
+- CORS 에러: 백엔드의 cors() 설정이 제대로 되어 있는지 확인하세요.
+- API Quota 에러: Gemini API의 무료 할당량이 초과된 경우 발생할 수 있습니다. 잠시 후 다시 시도하세요.
+- 포트 충돌: 5000번이나 3000번 포트가 이미 사용 중인 경우 .env 파일에서 포트 번호를 변경하세요.
