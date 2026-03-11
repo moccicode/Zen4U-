@@ -234,35 +234,44 @@ IT 전문가들은 "2026년은 인류가 도구를 사용하는 존재에서 도
   }
 ];
 
-async function startServer() {
-  const app = express();
-  const httpServer = createServer(app);
-  const io = new Server(httpServer);
-  const PORT = 3000;
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer);
+const PORT = 3000;
 
-  app.use(express.json());
-  app.use("/uploads", express.static("uploads"));
-  app.get("/앵커 나현.png", (req, res) => {
-    res.sendFile(path.join(process.cwd(), "앵커 나현.png"));
+app.use(express.json());
+app.use("/uploads", express.static("uploads"));
+
+// Serve static image from public if it exists, otherwise from root
+app.get("/앵커 나현.png", (req, res) => {
+  const publicPath = path.join(process.cwd(), "public", "앵커 나현.png");
+  const rootPath = path.join(process.cwd(), "앵커 나현.png");
+  if (fs.existsSync(publicPath)) {
+    res.sendFile(publicPath);
+  } else if (fs.existsSync(rootPath)) {
+    res.sendFile(rootPath);
+  } else {
+    res.status(404).send("Image not found");
+  }
+});
+
+// Socket.io connection
+io.on("connection", (socket) => {
+  socket.on("join", (userId) => {
+    socket.join(`user_${userId}`);
   });
+});
 
-  // Socket.io connection
-  io.on("connection", (socket) => {
-    socket.on("join", (userId) => {
-      socket.join(`user_${userId}`);
-    });
+// Helper to send notification
+const sendNotification = (userId: number, type: string, message: string) => {
+  const info = db.prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)").run(userId, type, message);
+  io.to(`user_${userId}`).emit("notification", {
+    id: info.lastInsertRowid,
+    type,
+    message,
+    created_at: new Date().toISOString()
   });
-
-  // Helper to send notification
-  const sendNotification = (userId: number, type: string, message: string) => {
-    const info = db.prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)").run(userId, type, message);
-    io.to(`user_${userId}`).emit("notification", {
-      id: info.lastInsertRowid,
-      type,
-      message,
-      created_at: new Date().toISOString()
-    });
-  };
+};
 
   // Auth Routes
   app.post("/api/auth/signup", (req, res) => {
@@ -572,8 +581,10 @@ async function startServer() {
     res.json({ success: true, message: `${reporter.name} 기자님께 협업 요청이 전달되었습니다.` });
   });
 
-  // Vite middleware for development
+// Vite middleware for development
+async function setupVite() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -585,10 +596,14 @@ async function startServer() {
       res.sendFile(path.join(process.cwd(), "dist", "index.html"));
     });
   }
+}
 
+setupVite();
+
+if (process.env.VERCEL !== "1") {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
-startServer();
+export default app;
