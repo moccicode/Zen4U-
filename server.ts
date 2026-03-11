@@ -1,6 +1,6 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import Database from "better-sqlite3";
+import postgres from "postgres";
 import path from "path";
 import * as cheerio from "cheerio";
 import { Server } from "socket.io";
@@ -8,7 +8,14 @@ import { createServer } from "http";
 import multer from "multer";
 import fs from "fs";
 
-const db = new Database("zen4u.db");
+// Database initialization with Supabase compatibility
+const sql = postgres(process.env.DATABASE_URL!, {
+  ssl: 'require',
+  transform: {
+    ...postgres.camel,
+    undefined: null
+  }
+});
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(process.cwd(), "uploads");
@@ -25,72 +32,6 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage });
-
-// Initialize database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company TEXT,
-    department TEXT,
-    name TEXT,
-    email TEXT UNIQUE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS memos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    article_url TEXT,
-    content TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    is_favorite INTEGER DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS posts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    category TEXT,
-    title TEXT,
-    content TEXT,
-    link_url TEXT,
-    link_title TEXT,
-    link_description TEXT,
-    link_image TEXT,
-    file_url TEXT,
-    file_name TEXT,
-    view_count INTEGER DEFAULT 0,
-    like_count INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS comments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    post_id INTEGER,
-    user_id INTEGER,
-    content TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(post_id) REFERENCES posts(id),
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    type TEXT,
-    message TEXT,
-    is_read INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  );
-
-  -- Insert sample reporters into users table if they don't exist
-  INSERT OR IGNORE INTO users (id, name, company, department, email) VALUES 
-  (991, '김기자', '동아일보', '산업부', 'kim@donga.com'),
-  (992, '이리포터', 'KBS', '정치부', 'lee@kbs.co.kr'),
-  (993, '박기자', '매일경제', '금융부', 'park@mk.co.kr'),
-  (994, '최기자', '한겨레', '사회부', 'choi@hani.co.kr'),
-  (995, '정리포터', 'SBS', 'IT부', 'jung@sbs.co.kr');
-`);
 
 // Sample Reporter Data
 const reporters = [
@@ -263,325 +204,404 @@ io.on("connection", (socket) => {
 });
 
 // Helper to send notification
-const sendNotification = (userId: number, type: string, message: string) => {
-  const info = db.prepare("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)").run(userId, type, message);
-  io.to(`user_${userId}`).emit("notification", {
-    id: info.lastInsertRowid,
-    type,
-    message,
-    created_at: new Date().toISOString()
-  });
+const sendNotification = async (userId: number, type: string, message: string) => {
+  try {
+    const [notification] = await sql`
+      INSERT INTO notifications (user_id, type, message) 
+      VALUES (${userId}, ${type}, ${message}) 
+      RETURNING id, created_at
+    `;
+    io.to(`user_${userId}`).emit("notification", {
+      id: notification.id,
+      type,
+      message,
+      created_at: notification.createdAt
+    });
+  } catch (err) {
+    console.error("Failed to send notification:", err);
+  }
 };
 
-  // Auth Routes
-  app.post("/api/auth/signup", (req, res) => {
-    const { company, department, name, email } = req.body;
-    try {
-      const info = db.prepare("INSERT INTO users (company, department, name, email) VALUES (?, ?, ?, ?)").run(company, department, name, email);
-      const user = db.prepare("SELECT * FROM users WHERE id = ?").get(info.lastInsertRowid);
-      res.json(user);
-    } catch (error) {
-      res.status(400).json({ error: "Email already exists" });
-    }
-  });
+// Auth Routes
+app.post("/api/auth/signup", async (req, res) => {
+  const { company, department, name, email } = req.body;
+  try {
+    const [user] = await sql`
+      INSERT INTO users (company, department, name, email) 
+      VALUES (${company}, ${department}, ${name}, ${email}) 
+      RETURNING *
+    `;
+    res.json(user);
+  } catch (error) {
+    console.error("Signup error:", error);
+    res.status(400).json({ error: "Email already exists" });
+  }
+});
 
-  app.post("/api/auth/login", (req, res) => {
-    const { email } = req.body;
-    const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+app.post("/api/auth/login", async (req, res) => {
+  const { email } = req.body;
+  try {
+    const [user] = await sql`SELECT * FROM users WHERE email = ${email}`;
     if (user) {
       res.json(user);
     } else {
       res.status(404).json({ error: "User not found" });
     }
-  });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
-  // API Routes
-  app.get("/api/memos", (req, res) => {
-    const memos = db.prepare("SELECT * FROM memos ORDER BY created_at DESC").all();
+// API Routes
+app.get("/api/memos", async (req, res) => {
+  try {
+    const memos = await sql`SELECT * FROM memos ORDER BY created_at DESC`;
     res.json(memos);
-  });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch memos" });
+  }
+});
 
-  app.post("/api/memos", (req, res) => {
-    const { article_url, content } = req.body;
-    const info = db.prepare("INSERT INTO memos (article_url, content, created_at) VALUES (?, ?, date('now'))").run(article_url, content);
-    res.json({ id: info.lastInsertRowid });
-  });
+app.post("/api/memos", async (req, res) => {
+  const { article_url, content } = req.body;
+  try {
+    const [memo] = await sql`
+      INSERT INTO memos (article_url, content, created_at) 
+      VALUES (${article_url}, ${content}, CURRENT_DATE) 
+      RETURNING id
+    `;
+    res.json({ id: memo.id });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create memo" });
+  }
+});
 
-  app.put("/api/memos/:id", (req, res) => {
-    const { id } = req.params;
-    const { content, is_favorite } = req.body;
-    
-    try {
-      if (content !== undefined) {
-        db.prepare("UPDATE memos SET content = ? WHERE id = ?").run(content, id);
-      }
-      if (is_favorite !== undefined) {
-        db.prepare("UPDATE memos SET is_favorite = ? WHERE id = ?").run(is_favorite ? 1 : 0, id);
-      }
+app.put("/api/memos/:id", async (req, res) => {
+  const { id } = req.params;
+  const { content, is_favorite } = req.body;
+  
+  try {
+    if (content !== undefined) {
+      await sql`UPDATE memos SET content = ${content} WHERE id = ${id}`;
+    }
+    if (is_favorite !== undefined) {
+      await sql`UPDATE memos SET is_favorite = ${is_favorite ? 1 : 0} WHERE id = ${id}`;
+    }
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("[Server] Update error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/memos/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) {
+    return res.status(400).json({ error: "Invalid ID" });
+  }
+  try {
+    const result = await sql`DELETE FROM memos WHERE id = ${id}`;
+    if (result.count > 0) {
       res.json({ success: true });
-    } catch (error: any) {
-      console.error("[Server] Update error:", error);
-      res.status(500).json({ error: error.message });
+    } else {
+      res.status(404).json({ error: "Memo not found" });
     }
-  });
+  } catch (error: any) {
+    console.error("[Server] Delete error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
-  app.delete("/api/memos/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) {
-      return res.status(400).json({ error: "Invalid ID" });
-    }
-    try {
-      const info = db.prepare("DELETE FROM memos WHERE id = ?").run(id);
-      if (info.changes > 0) {
-        res.json({ success: true });
-      } else {
-        res.status(404).json({ error: "Memo not found" });
+app.post("/api/fetch-article", async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: "URL is required" });
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       }
-    } catch (error: any) {
-      console.error("[Server] Delete error:", error);
-      res.status(500).json({ error: error.message });
+    });
+    const html = await response.text();
+    const $ = cheerio.load(html);
+    $('script, style, nav, footer, header, aside, .ads, #ads').remove();
+    let content = $('article').text() || $('main').text() || $('body').text();
+    content = content.replace(/\s+/g, ' ').trim().substring(0, 15000);
+    res.json({ content });
+  } catch (error) {
+    console.error("Error fetching article:", error);
+    res.status(500).json({ error: "Failed to fetch article content" });
+  }
+});
+
+app.get("/api/posts", async (req, res) => {
+  const { category, search, sort } = req.query;
+  try {
+    let posts;
+    if (category && search) {
+      posts = await sql`
+        SELECT p.*, u.name as user_name, u.company as user_company,
+        (SELECT COUNT(*) FROM comments WHERE post_id = p.id) as comment_count
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        WHERE p.category = ${category as string} AND (p.title ILIKE ${'%' + search + '%'} OR p.content ILIKE ${'%' + search + '%'})
+        ORDER BY ${sort === 'popular' ? sql`p.like_count DESC, p.created_at DESC` : sql`p.created_at DESC`}
+      `;
+    } else if (category) {
+      posts = await sql`
+        SELECT p.*, u.name as user_name, u.company as user_company,
+        (SELECT COUNT(*) FROM comments WHERE post_id = p.id) as comment_count
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        WHERE p.category = ${category as string}
+        ORDER BY ${sort === 'popular' ? sql`p.like_count DESC, p.created_at DESC` : sql`p.created_at DESC`}
+      `;
+    } else if (search) {
+      posts = await sql`
+        SELECT p.*, u.name as user_name, u.company as user_company,
+        (SELECT COUNT(*) FROM comments WHERE post_id = p.id) as comment_count
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        WHERE (p.title ILIKE ${'%' + search + '%'} OR p.content ILIKE ${'%' + search + '%'})
+        ORDER BY ${sort === 'popular' ? sql`p.like_count DESC, p.created_at DESC` : sql`p.created_at DESC`}
+      `;
+    } else {
+      posts = await sql`
+        SELECT p.*, u.name as user_name, u.company as user_company,
+        (SELECT COUNT(*) FROM comments WHERE post_id = p.id) as comment_count
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        ORDER BY ${sort === 'popular' ? sql`p.like_count DESC, p.created_at DESC` : sql`p.created_at DESC`}
+      `;
     }
-  });
+    res.json(posts);
+  } catch (err) {
+    console.error("Fetch posts error:", err);
+    res.status(500).json({ error: "Failed to fetch posts" });
+  }
+});
 
-  // New endpoint to fetch article content
-  app.post("/api/fetch-article", async (req, res) => {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: "URL is required" });
+app.post("/api/posts", upload.single('file'), async (req: any, res) => {
+  const { user_id, category, title, content, link_url } = req.body;
+  const file = req.file;
 
+  let link_title = null;
+  let link_description = null;
+  let link_image = null;
+
+  if (link_url) {
     try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-      });
+      const response = await fetch(link_url);
       const html = await response.text();
       const $ = cheerio.load(html);
-
-      // Remove scripts, styles, and other noise
-      $('script, style, nav, footer, header, aside, .ads, #ads').remove();
-
-      // Try to find the main content
-      let content = $('article').text() || $('main').text() || $('body').text();
-      
-      // Clean up whitespace
-      content = content.replace(/\s+/g, ' ').trim().substring(0, 15000); // Limit to 15k chars for Gemini
-
-      res.json({ content });
-    } catch (error) {
-      console.error("Error fetching article:", error);
-      res.status(500).json({ error: "Failed to fetch article content" });
+      link_title = $('meta[property="og:title"]').attr('content') || $('title').text();
+      link_description = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content');
+      link_image = $('meta[property="og:image"]').attr('content');
+    } catch (err) {
+      console.error('Error fetching link preview:', err);
     }
-  });
-
-  // Community Routes
-  app.get("/api/posts", (req, res) => {
-    const { category, search, sort } = req.query;
-    let query = `
-      SELECT p.*, u.name as user_name, u.company as user_company,
-      (SELECT COUNT(*) FROM comments WHERE post_id = p.id) as comment_count
-      FROM posts p
-      JOIN users u ON p.user_id = u.id
-      WHERE 1=1
-    `;
-    const params: any[] = [];
-
-    if (category) {
-      query += " AND p.category = ?";
-      params.push(category);
-    }
-    if (search) {
-      query += " AND (p.title LIKE ? OR p.content LIKE ?)";
-      params.push(`%${search}%`, `%${search}%`);
-    }
-
-    if (sort === 'popular') {
-      query += " ORDER BY p.like_count DESC, p.created_at DESC";
-    } else {
-      query += " ORDER BY p.created_at DESC";
-    }
-
-    const posts = db.prepare(query).all(...params);
-    res.json(posts);
-  });
-
-  app.post("/api/posts", upload.single('file'), async (req: any, res) => {
-    const { user_id, category, title, content, link_url } = req.body;
-    const file = req.file;
-
-    let link_title = null;
-    let link_description = null;
-    let link_image = null;
-
-    if (link_url) {
-      try {
-        const response = await fetch(link_url);
-        const html = await response.text();
-        const $ = cheerio.load(html);
-        link_title = $('meta[property="og:title"]').attr('content') || $('title').text();
-        link_description = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content');
-        link_image = $('meta[property="og:image"]').attr('content');
-      } catch (err) {
-        console.error('Error fetching link preview:', err);
-      }
-    }
-    
-    const info = db.prepare(`
+  }
+  
+  try {
+    const [post] = await sql`
       INSERT INTO posts (user_id, category, title, content, link_url, link_title, link_description, link_image, file_url, file_name)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(user_id, category, title, content, link_url, link_title, link_description, link_image, file ? `/uploads/${file.filename}` : null, file ? file.originalname : null);
-    
-    res.json({ id: info.lastInsertRowid });
-  });
+      VALUES (${user_id}, ${category}, ${title}, ${content}, ${link_url}, ${link_title}, ${link_description}, ${link_image}, ${file ? `/uploads/${file.filename}` : null}, ${file ? file.originalname : null})
+      RETURNING id
+    `;
+    res.json({ id: post.id });
+  } catch (err) {
+    console.error("Create post error:", err);
+    res.status(500).json({ error: "Failed to create post" });
+  }
+});
 
-  app.get("/api/posts/:id", (req, res) => {
-    const { id } = req.params;
-    db.prepare("UPDATE posts SET view_count = view_count + 1 WHERE id = ?").run(id);
-    const post = db.prepare(`
+app.get("/api/posts/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    await sql`UPDATE posts SET view_count = view_count + 1 WHERE id = ${id}`;
+    const [post] = await sql`
       SELECT p.*, u.name as user_name, u.company as user_company,
       (SELECT COUNT(*) FROM comments WHERE post_id = p.id) as comment_count
       FROM posts p
       JOIN users u ON p.user_id = u.id
-      WHERE p.id = ?
-    `).get(id);
+      WHERE p.id = ${id}
+    `;
     res.json(post);
-  });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch post" });
+  }
+});
 
-  app.put("/api/posts/:id", upload.single('file'), async (req: any, res) => {
-    const { id } = req.params;
-    const { category, title, content, link_url } = req.body;
-    const file = req.file;
+app.put("/api/posts/:id", upload.single('file'), async (req: any, res) => {
+  const { id } = req.params;
+  const { category, title, content, link_url } = req.body;
+  const file = req.file;
 
-    let link_title = null;
-    let link_description = null;
-    let link_image = null;
+  let link_title = null;
+  let link_description = null;
+  let link_image = null;
 
-    if (link_url) {
-      try {
-        const response = await fetch(link_url);
-        const html = await response.text();
-        const $ = cheerio.load(html);
-        link_title = $('meta[property="og:title"]').attr('content') || $('title').text();
-        link_description = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content');
-        link_image = $('meta[property="og:image"]').attr('content');
-      } catch (err) {
-        console.error('Error fetching link preview:', err);
-      }
-    }
-
+  if (link_url) {
     try {
-      let query = "UPDATE posts SET category = ?, title = ?, content = ?, link_url = ?, link_title = ?, link_description = ?, link_image = ?";
-      const params = [category, title, content, link_url, link_title, link_description, link_image];
-
-      if (file) {
-        query += ", file_url = ?, file_name = ?";
-        params.push(`/uploads/${file.filename}`, file.originalname);
-      }
-
-      query += " WHERE id = ?";
-      params.push(id);
-
-      db.prepare(query).run(...params);
-      res.json({ success: true });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      const response = await fetch(link_url);
+      const html = await response.text();
+      const $ = cheerio.load(html);
+      link_title = $('meta[property="og:title"]').attr('content') || $('title').text();
+      link_description = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content');
+      link_image = $('meta[property="og:image"]').attr('content');
+    } catch (err) {
+      console.error('Error fetching link preview:', err);
     }
-  });
+  }
 
-  app.delete("/api/posts/:id", (req, res) => {
-    const { id } = req.params;
-    db.prepare("DELETE FROM comments WHERE post_id = ?").run(id);
-    db.prepare("DELETE FROM posts WHERE id = ?").run(id);
+  try {
+    if (file) {
+      await sql`
+        UPDATE posts SET 
+          category = ${category}, title = ${title}, content = ${content}, 
+          link_url = ${link_url}, link_title = ${link_title}, 
+          link_description = ${link_description}, link_image = ${link_image},
+          file_url = ${`/uploads/${file.filename}`}, file_name = ${file.originalname}
+        WHERE id = ${id}
+      `;
+    } else {
+      await sql`
+        UPDATE posts SET 
+          category = ${category}, title = ${title}, content = ${content}, 
+          link_url = ${link_url}, link_title = ${link_title}, 
+          link_description = ${link_description}, link_image = ${link_image}
+        WHERE id = ${id}
+      `;
+    }
     res.json({ success: true });
-  });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-  app.post("/api/posts/:id/like", (req, res) => {
-    const { id } = req.params;
-    db.prepare("UPDATE posts SET like_count = like_count + 1 WHERE id = ?").run(id);
+app.delete("/api/posts/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    await sql`DELETE FROM comments WHERE post_id = ${id}`;
+    await sql`DELETE FROM posts WHERE id = ${id}`;
     res.json({ success: true });
-  });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete post" });
+  }
+});
 
-  app.get("/api/posts/:id/comments", (req, res) => {
-    const { id } = req.params;
-    const comments = db.prepare(`
+app.post("/api/posts/:id/like", async (req, res) => {
+  const { id } = req.params;
+  try {
+    await sql`UPDATE posts SET like_count = like_count + 1 WHERE id = ${id}`;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to like post" });
+  }
+});
+
+app.get("/api/posts/:id/comments", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const comments = await sql`
       SELECT c.*, u.name as user_name
       FROM comments c
       JOIN users u ON c.user_id = u.id
-      WHERE c.post_id = ?
+      WHERE c.post_id = ${id}
       ORDER BY c.created_at ASC
-    `).all(id);
+    `;
     res.json(comments);
-  });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch comments" });
+  }
+});
 
-  app.post("/api/comments", (req, res) => {
-    const { post_id, user_id, content } = req.body;
-    const info = db.prepare("INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)").run(post_id, user_id, content);
+app.post("/api/comments", async (req, res) => {
+  const { post_id, user_id, content } = req.body;
+  try {
+    const [comment] = await sql`
+      INSERT INTO comments (post_id, user_id, content) 
+      VALUES (${post_id}, ${user_id}, ${content}) 
+      RETURNING id
+    `;
     
-    // Notify post owner
-    const post = db.prepare("SELECT user_id, title FROM posts WHERE id = ?").get(post_id);
-    if (post && post.user_id !== user_id) {
-      sendNotification(post.user_id, 'comment', `내 게시글 "${post.title}"에 새로운 댓글이 달렸습니다.`);
+    const [post] = await sql`SELECT user_id, title FROM posts WHERE id = ${post_id}`;
+    if (post && post.userId !== user_id) {
+      sendNotification(post.userId, 'comment', `내 게시글 "${post.title}"에 새로운 댓글이 달렸습니다.`);
     }
 
-    // Handle mentions
     const mentions = content.match(/@(\S+)/g);
     if (mentions) {
-      mentions.forEach((mention: string) => {
-        const name = mention.substring(1);
-        const mentionedUser = db.prepare("SELECT id FROM users WHERE name = ?").get(name);
+      for (const mention of mentions) {
+        const name = (mention as string).substring(1);
+        const [mentionedUser] = await sql`SELECT id FROM users WHERE name = ${name}`;
         if (mentionedUser && mentionedUser.id !== user_id) {
           sendNotification(mentionedUser.id, 'mention', `게시글 댓글에서 당신을 언급했습니다.`);
         }
-      });
+      }
     }
 
-    res.json({ id: info.lastInsertRowid });
-  });
+    res.json({ id: comment.id });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create comment" });
+  }
+});
 
-  app.get("/api/notifications/:userId", (req, res) => {
-    const { userId } = req.params;
-    const notifications = db.prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20").all(userId);
+app.get("/api/notifications/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const notifications = await sql`
+      SELECT * FROM notifications 
+      WHERE user_id = ${userId} 
+      ORDER BY created_at DESC 
+      LIMIT 20
+    `;
     res.json(notifications);
-  });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch notifications" });
+  }
+});
 
-  app.post("/api/notifications/:id/read", (req, res) => {
-    const { id } = req.params;
-    db.prepare("UPDATE notifications SET is_read = 1 WHERE id = ?").run(id);
+app.post("/api/notifications/:id/read", async (req, res) => {
+  const { id } = req.params;
+  try {
+    await sql`UPDATE notifications SET is_read = 1 WHERE id = ${id}`;
     res.json({ success: true });
-  });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to mark notification as read" });
+  }
+});
 
-  // AI Newsroom Special Features
-  app.get("/api/newsroom/network-map", (req, res) => {
-    res.json(reporters);
-  });
+app.get("/api/newsroom/network-map", (req, res) => {
+  res.json(reporters);
+});
 
-  app.get("/api/newsroom/reporter-recommendation/:topic", (req, res) => {
-    const { topic } = req.params;
-    const recommended = reporters.filter(r => 
-      r.specialty.some(s => topic.includes(s)) || 
-      r.articles.some(a => a.title.includes(topic))
+app.get("/api/newsroom/reporter-recommendation/:topic", (req, res) => {
+  const { topic } = req.params;
+  const recommended = reporters.filter(r => 
+    r.specialty.some(s => topic.includes(s)) || 
+    r.articles.some(a => a.title.includes(topic))
+  );
+  res.json(recommended.length > 0 ? recommended : reporters.slice(0, 2));
+});
+
+app.post("/api/newsroom/collaboration-request", async (req, res) => {
+  const { reporterId, requesterName, requesterCompany } = req.body;
+  const reporter = reporters.find(r => r.id === reporterId);
+  if (!reporter) return res.status(404).json({ error: "Reporter not found" });
+
+  if (reporter.db_user_id) {
+    await sendNotification(
+      reporter.db_user_id, 
+      'collab', 
+      `${requesterCompany}의 ${requesterName}님이 당신에게 협업을 요청했습니다. 'AI 뉴스룸'에서 확인해보세요.`
     );
-    res.json(recommended.length > 0 ? recommended : reporters.slice(0, 2));
-  });
+  }
 
-  app.post("/api/newsroom/collaboration-request", (req, res) => {
-    const { reporterId, requesterName, requesterCompany } = req.body;
-    const reporter = reporters.find(r => r.id === reporterId);
-    if (!reporter) return res.status(404).json({ error: "Reporter not found" });
+  res.json({ success: true, message: `${reporter.name} 기자님께 협업 요청이 전달되었습니다.` });
+});
 
-    // Send real notification to the reporter's user account
-    if (reporter.db_user_id) {
-      sendNotification(
-        reporter.db_user_id, 
-        'collab', 
-        `${requesterCompany}의 ${requesterName}님이 당신에게 협업을 요청했습니다. 'AI 뉴스룸'에서 확인해보세요.`
-      );
-    }
-
-    console.log(`Collaboration request for ${reporter.name} from ${requesterName} (${requesterCompany})`);
-    res.json({ success: true, message: `${reporter.name} 기자님께 협업 요청이 전달되었습니다.` });
-  });
-
-// Vite middleware for development
 async function setupVite() {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
